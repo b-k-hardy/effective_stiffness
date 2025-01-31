@@ -34,7 +34,14 @@ def area_stiffness():
     return -1
 
 
-def load_data(path, systole_timestep):
+def filter_by_percentile(data: np.ndarray, lower: float, upper: float) -> np.ndarray:
+    lower_percentile = np.percentile(data, lower)
+    upper_percentile = np.percentile(data, upper)
+
+    return data[(data >= lower_percentile) & (data <= upper_percentile)]
+
+
+def load_data(path: str, systole_timestep: int):
     xyz, _, _ = cheartio.read_mesh(path)
     bfile = cheartio.read_bfile(path)
 
@@ -127,16 +134,32 @@ def main():
 
     node_strain = (node_area_sys - node_area_dia) / node_area_dia
     node_stiffness = pressure_delta / node_strain
-    node_stiffness_wall = pressure_delta[wall_bfile_nodes] / node_strain[wall_bfile_nodes]
+    node_stiffness_wall = pressure_delta[moving_wall_nodes] / node_strain[moving_wall_nodes]
 
-    # FIXME: I'm definitely fucking up the indexing BIG TIME...
+    cell_pressures = np.mean(pressure_delta[wall_bfile_elements], axis=1)
+    cell_stiffness = cell_pressures / cell_strain
+
+    # Calculate quantiles
+    lower_quantile = np.percentile(node_stiffness_wall, 5)
+    upper_quantile = np.percentile(node_stiffness_wall, 95)
+
+    # Filter data
+    filtered_data = node_stiffness_wall[
+        (node_stiffness_wall >= lower_quantile) & (node_stiffness_wall <= upper_quantile)
+    ]
 
     # could do a bunch of violin plots here to show the distribution of k values depending on the region...
     fig2, ax2 = plt.subplots(figsize=(5, 5))
     ax2.violinplot(node_stiffness_wall, showextrema=False, quantiles=[0.25, 0.5, 0.75])
-    ax2.set_title("Distribution of K values on Outer Wall -- Area Method")
+    ax2.set_title("Distribution of Stiffness on Outer Wall -- Area Method")
     fig2.tight_layout()
     fig2.savefig("visualizations/violin_plot_area_method.pdf")
+
+    fig3, ax3 = plt.subplots(figsize=(5, 5))
+    ax3.violinplot(filter_by_percentile(node_stiffness_wall, 5, 95), showextrema=False, quantiles=[0.25, 0.5, 0.75])
+    ax3.set_title("Distribution of Stiffness on Outer Wall -- Area Method (Filtered)")
+    fig3.tight_layout()
+    fig3.savefig("visualizations/violin_plot_area_method_filtered.pdf")
 
     # YES or wait... should I assemble area THEN calculate strain? don't thnk it matters
 
@@ -152,7 +175,7 @@ def main():
             "Node Strain": node_strain,
             "Node Modulus (Pa)": node_stiffness,
         },
-        cell_data={"Strain": [cell_strain]},
+        cell_data={"Strain": [cell_strain], "Cell Modulus (Pa)": [cell_stiffness]},
     )
     meshio.write_points_cells(
         "visualizations/prescribed_stiffness.vtu",
@@ -169,8 +192,6 @@ def main():
             "Relative Error": np.abs(K * systole_d["spatK"] - stiffness_points) / (K * systole_d["spatK"]),
         },
     )
-
-    plt.show()
 
 
 if __name__ == "__main__":
