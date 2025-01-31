@@ -59,12 +59,14 @@ def load_data(path, systole_timestep):
 def main():
     # read in geometry
     xyz, bfile, systole_d, diastole_d = load_data("model", 241)
+    node_normals = cheartio.read_dfile("norms.D")
+
 
     ################## Calculate Displacement Stiffness ##################
-    # calculate displacement
+    # calculate displacement field
     displacement = systole_d["X"] - diastole_d["X"]
 
-    # find nodes on the outer wall boundary: N x 3 array of node indices per triangle
+    # find all nodes that exist on outer wall; flatten and take unique values
     wall_nodes = np.unique(bfile[np.isin(bfile[:, 4], 8), 1:-1].flatten())
 
     # find nodes that have moved at all (1e-7 tolerance)
@@ -77,21 +79,19 @@ def main():
 
     displacement_outer_wall = displacement[moving_wall_nodes]
 
-    node_normals = cheartio.read_dfile("norms.D")
     node_normals = node_normals[moving_wall_nodes]
 
     pressure_delta = systole_d["P"] - diastole_d["P"]
-    pressure_delta_main_wall = pressure_delta[moving_wall_nodes]
+    pressure_delta_outer_wall = pressure_delta[moving_wall_nodes]
 
     # Math: k = \frac{(P_{\text{sys}}-P_{\text{dia}})}{\left\lVert u_{\text{sys}}\right\rVert^2_2} u_{\text{sys}}^T n
     # Calculate spring constant from displacement and pressure data
     k = (
-        pressure_delta_main_wall
+        pressure_delta_outer_wall
         / np.linalg.norm(displacement_outer_wall, axis=1) ** 2
         * np.sum(displacement_outer_wall * node_normals, axis=1)
     )
 
-    wall_bfile_elements = bfile[np.isin(bfile[:, 4], 8), 1:-1]  # <- this has original indexing from X file...
     # THEREFORE any point data will need to maintain original indexing... oh fuck so I need a lot of zeros lol
     stiffness_points = np.zeros(np.shape(xyz)[0])
     stiffness_points[moving_wall_nodes] = k
@@ -103,6 +103,7 @@ def main():
     print("Min K:", np.min(k))
 
     ################## Calculate Area Stiffness ##################
+    wall_bfile_elements = bfile[np.isin(bfile[:, 4], 8), 1:-1]  # <- this has original indexing from X file...
     area_sys = calculate_area(systole_d["X"], wall_bfile_elements)
     area_dia = calculate_area(diastole_d["X"], wall_bfile_elements)
     strain = (area_sys - area_dia) / area_dia
@@ -127,7 +128,7 @@ def main():
 
     node_strain = (node_area_sys - node_area_dia) / node_area_dia
     node_stiffness = pressure_delta / node_strain
-    node_stiffness_wall = pressure_delta_main_wall / node_strain[moving_wall_nodes]
+    node_stiffness_wall = pressure_delta_outer_wall / node_strain[moving_wall_nodes]
 
     # FIXME: I'm definitely fucking up the indexing BIG TIME...
     # node_strain[wall_bfile_elements] = strain[wall_bfile_elements]
