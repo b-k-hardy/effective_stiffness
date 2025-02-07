@@ -163,7 +163,7 @@ def main():
     node_area_dia_connected = np.zeros(xyz.shape[0])
     node_element_count_connected = np.zeros(xyz.shape[0])
 
-    k = 2  # 1 means adjacent triangles, 2 means neighbors of neighbors, 3 means neighbors of neighbors of neighbors...
+    k = 4  # 1 means adjacent triangles, 2 means neighbors of neighbors, 3 means neighbors of neighbors of neighbors...
 
     for node_idx in np.unique(wall_bfile_elements.flatten()):
         # find idx of all connected elements
@@ -182,9 +182,9 @@ def main():
 
         # NOW we have all triangles that we'd like to look at...
         # connected_triangles = np.unique(np.array(connected_triangles).flatten())
-        triangle_count = len(connected_triangles)
-        node_area_sys_connected[node_idx] = np.sum(area_sys[connected_triangles])
-        node_area_dia_connected[node_idx] = np.sum(area_dia[connected_triangles])
+        triangle_count = len(triangle_idx)
+        node_area_sys_connected[node_idx] = np.sum(area_sys[triangle_idx])
+        node_area_dia_connected[node_idx] = np.sum(area_dia[triangle_idx])
         node_element_count_connected[node_idx] = triangle_count
 
     node_area_sys_connected /= 0.5 * node_element_count_connected
@@ -205,10 +205,21 @@ def main():
             "Stiffness (Pa/mm)": stiffness_points,
             "Node Strain": node_strain,
             "Node Modulus (Pa)": node_stiffness,
-            "Node Modulus Connected (Pa)": node_stiffness_connected,
         },
         cell_data={"Strain": [cell_strain], "Cell Modulus (Pa)": [cell_stiffness]},
     )
+    meshio.write_points_cells(
+        f"visualizations/estimated_stiffness_k{k}.vtu",
+        xyz,
+        cells,
+        point_data={
+            "Stiffness (Pa/mm)": stiffness_points,
+            "Node Strain": node_strain,
+            "Node Modulus (Pa)": node_stiffness_connected,
+        },
+        cell_data={"Strain": [cell_strain], "Cell Modulus (Pa)": [cell_stiffness]},
+    )
+
     meshio.write_points_cells(
         "visualizations/prescribed_stiffness.vtu",
         xyz,
