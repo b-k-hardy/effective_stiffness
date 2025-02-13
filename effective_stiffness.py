@@ -91,7 +91,6 @@ def main():
     pressure_delta = systole_d["P"] - diastole_d["P"]
     pressure_delta_outer_wall = pressure_delta[moving_wall_nodes]
 
-    # Math: k = \frac{(P_{\text{sys}}-P_{\text{dia}})}{\left\lVert u_{\text{sys}}\right\rVert^2_2} u_{\text{sys}}^T n
     # Calculate spring constant from displacement and pressure data
     k = (
         pressure_delta_outer_wall
@@ -162,37 +161,62 @@ def main():
     node_area_sys_connected = np.zeros(xyz.shape[0])
     node_area_dia_connected = np.zeros(xyz.shape[0])
     node_element_count_connected = np.zeros(xyz.shape[0])
+    cells = [("triangle", wall_bfile_elements)]
+    # 1 means adjacent triangles, 2 means neighbors of neighbors, 3 means neighbors of neighbors of neighbors...
+    for neighbor_extent in range(1, 5):
+        for node_idx in np.unique(wall_bfile_elements.flatten()):
+            # find idx of all connected elements
 
-    k = 4  # 1 means adjacent triangles, 2 means neighbors of neighbors, 3 means neighbors of neighbors of neighbors...
+            # FIND INITIAL CONNECTED TRIANGLES
+            triangle_idx = np.argwhere(np.any(wall_bfile_elements == node_idx, axis=1)).flatten()
 
-    for node_idx in np.unique(wall_bfile_elements.flatten()):
-        # find idx of all connected elements
+            for _ in range(neighbor_extent - 1):
+                connected_nodes = np.unique(wall_bfile_elements[triangle_idx].flatten())
+                connected_triangles = []
+                for node in connected_nodes:
+                    connected_triangles.extend(
+                        np.argwhere(np.any(wall_bfile_elements == node, axis=1)).flatten().tolist(),
+                    )
 
-        # FIXME: these 5 lines can be made generalized or made recursive or something so I can check with more neighbors
-        # FIND INITIAL CONNECTED TRIANGLES
-        triangle_idx = np.argwhere(np.any(wall_bfile_elements == node_idx, axis=1)).flatten()
+                triangle_idx = np.unique(np.array(connected_triangles).flatten())
 
-        for _ in range(k - 1):
-            connected_nodes = np.unique(wall_bfile_elements[triangle_idx].flatten())
-            connected_triangles = []
-            for node in connected_nodes:
-                connected_triangles.extend(np.argwhere(np.any(wall_bfile_elements == node, axis=1)).flatten().tolist())
+            # NOW we have all triangles that we'd like to look at...
+            triangle_count = len(triangle_idx)
+            node_area_sys_connected[node_idx] = np.sum(area_sys[triangle_idx])
+            node_area_dia_connected[node_idx] = np.sum(area_dia[triangle_idx])
+            node_element_count_connected[node_idx] = triangle_count
 
-            triangle_idx = np.unique(np.array(connected_triangles).flatten())
+        node_area_sys_connected /= 0.5 * node_element_count_connected
+        node_area_dia_connected /= 0.5 * node_element_count_connected
 
-        # NOW we have all triangles that we'd like to look at...
-        # connected_triangles = np.unique(np.array(connected_triangles).flatten())
-        triangle_count = len(triangle_idx)
-        node_area_sys_connected[node_idx] = np.sum(area_sys[triangle_idx])
-        node_area_dia_connected[node_idx] = np.sum(area_dia[triangle_idx])
-        node_element_count_connected[node_idx] = triangle_count
+        node_strain_connected = (node_area_sys_connected - node_area_dia_connected) / node_area_dia_connected
+        node_stiffness_connected = pressure_delta / node_strain_connected
+        node_stiffness_wall = pressure_delta[moving_wall_nodes] / node_strain_connected[moving_wall_nodes]
 
-    node_area_sys_connected /= 0.5 * node_element_count_connected
-    node_area_dia_connected /= 0.5 * node_element_count_connected
+        meshio.write_points_cells(
+            f"visualizations/estimated_stiffness_k{neighbor_extent}.vtu",
+            xyz,
+            cells,
+            point_data={
+                "Stiffness (Pa/mm)": stiffness_points,
+                "Node Strain": node_strain,
+                "Node Modulus (Pa)": node_stiffness_connected,
+            },
+            cell_data={"Strain": [cell_strain], "Cell Modulus (Pa)": [cell_stiffness]},
+        )
+        fig2, ax2 = plt.subplots(figsize=(5, 5))
+        ax2.violinplot(node_stiffness_wall, showextrema=False, quantiles=[0.25, 0.5, 0.75])
+        ax2.set_title(f"Distribution of Stiffness on Outer Wall (k={neighbor_extent})")
+        ax2.set_ylabel("Estimated Stiffness (Pa)")
+        fig2.tight_layout()
+        fig2.savefig(f"visualizations/violin_plot_area_method_{neighbor_extent}.pdf")
 
-    node_strain_connected = (node_area_sys_connected - node_area_dia_connected) / node_area_dia_connected
-    node_stiffness_connected = pressure_delta / node_strain_connected
-    node_stiffness_wall = pressure_delta[moving_wall_nodes] / node_strain_connected[moving_wall_nodes]
+        fig3, ax3 = plt.subplots(figsize=(5, 5))
+        ax3.violinplot(filter_by_percentile(node_stiffness_wall, 5, 95), showextrema=False, quantiles=[0.25, 0.5, 0.75])
+        ax3.set_title(f"Filtered Distribution of Stiffness on Outer Wall k={neighbor_extent}")
+        ax3.set_ylabel("Estimated Stiffness (Pa)")
+        fig3.tight_layout()
+        fig3.savefig(f"visualizations/violin_plot_area_method_filtered_{neighbor_extent}.pdf")
 
     ################ Write results to vtu files ################
     cells = [("triangle", wall_bfile_elements)]
@@ -205,17 +229,6 @@ def main():
             "Stiffness (Pa/mm)": stiffness_points,
             "Node Strain": node_strain,
             "Node Modulus (Pa)": node_stiffness,
-        },
-        cell_data={"Strain": [cell_strain], "Cell Modulus (Pa)": [cell_stiffness]},
-    )
-    meshio.write_points_cells(
-        f"visualizations/estimated_stiffness_k{k}.vtu",
-        xyz,
-        cells,
-        point_data={
-            "Stiffness (Pa/mm)": stiffness_points,
-            "Node Strain": node_strain,
-            "Node Modulus (Pa)": node_stiffness_connected,
         },
         cell_data={"Strain": [cell_strain], "Cell Modulus (Pa)": [cell_stiffness]},
     )
