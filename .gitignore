@@ -1,2 +1,6 @@
 visualizations/
 .DS_Store
+*.D
+*.X
+*.T
+*.vtu
