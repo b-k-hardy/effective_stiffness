@@ -3,6 +3,6 @@ visualizations/
 *.D
 *.X
 *.T
-*.vtu
 *.pvsm
 .vscode/
+*.vt*
