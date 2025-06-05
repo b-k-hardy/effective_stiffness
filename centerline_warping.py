@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
 from scipy.interpolate import splev, splprep
@@ -17,59 +18,24 @@ def fit_spline(centerline: pv.PolyData) -> pv.PolyData:
     new_points = np.array(new_points).T
     first_deriv = np.array(first_deriv).T
 
-    return new_points, first_deriv
+    spline_polydata = pv.PolyData(new_points, lines=[new_points.shape[0]] + np.arange(new_points.shape[0]).tolist())
+    spline_polydata.point_data.set_vectors(first_deriv, "Derivative")
+
+    return spline_polydata
 
 
-def main():
-    # load the centerline data
-    centerline_diastole = pv.read("Centerline_model_David.vtp")
-    centerline_systole = pv.read("Centerline warped.vtp")
-
-    # Fit splines to the centerline points
-    centerline_diastole_spline = fit_spline(centerline_diastole)
-    centerline_warped_points = centerline_systole.points
-
-    tck, u = splprep([main_centerline[:, 0], main_centerline[:, 1], main_centerline[:, 2]])
-    new_points = splev(u, tck)
-    first_deriv = splev(u, tck, der=1)
-
-    new_points = np.array(new_points).T
-    first_deriv = np.array(first_deriv).T
-
-    # Create a PolyData object from new_points
-    new_points_polydata = pv.PolyData(new_points, lines=[358] + np.arange(len(new_points)).tolist())
-
-    # Save the PolyData object to a .vtp file
-    new_points_polydata.point_data.set_vectors(first_deriv, "Derivative")
-
-    new_points_polydata.save("new_points.vtp")
-
-    tck, u = splprep([centerline_warped_points[:, 0], centerline_warped_points[:, 1], centerline_warped_points[:, 2]])
-    new_points_warped = splev(u, tck)
-    first_deriv_warped = splev(u, tck, der=1)
-
-    new_points_warped = np.array(new_points_warped).T
-    first_deriv_warped = np.array(first_deriv_warped).T
-
-    # Create a PolyData object from new_points
-    new_points_polydata_warped = pv.PolyData(
-        new_points_warped, lines=[344] + np.arange(len(new_points_warped)).tolist()
-    )
-
-    # Save the PolyData object to a .vtp file
-    new_points_polydata_warped.point_data.set_vectors(first_deriv_warped, "Derivative")
-
-    new_points_polydata_warped.save("new_points_warped.vtp")
-
-    full_model = pv.read("david_vdm.vtp")
-
+def circularity_contours(
+    full_surface: pv.PolyData,
+    centerline_sp: pv.PolyData,
+    clip_radius: float = 35.0,
+) -> pv.PolyData:
     extracted_cuts = []
     extracted_surfaces = []
 
-    for i in range(len(new_points)):
-        roi = pv.Sphere(center=new_points[i], radius=35)
+    for i in range(centerline_sp.n_points):
+        roi = pv.Sphere(center=centerline_sp.points[i], radius=clip_radius)
 
-        test_slice = full_model.slice(origin=new_points[i], normal=first_deriv[i])
+        test_slice = full_surface.slice(origin=centerline_sp.points[i], normal=centerline_sp["Derivative"][i])
         test_slice.clear_data()
 
         extracted = test_slice.clip_surface(roi, invert=True)
@@ -80,47 +46,60 @@ def main():
         perimeter = np.sum(lengths["Length"])
         extracted.cell_data.set_scalars(np.ones(extracted.n_cells) * perimeter, "Perimeter")
         extracted.cell_data.set_scalars(
-            np.ones(extracted.n_cells) * circularity(extracted_surf.area, perimeter), "Circularity"
+            np.ones(extracted.n_cells) * circularity(extracted_surf.area, perimeter),
+            "Circularity",
         )
 
         extracted_cuts.append(extracted)
         extracted_surfaces.append(extracted_surf)
 
-    all_extracted = pv.merge(extracted_cuts)
-    all_surfaces = pv.merge(extracted_surfaces)
+    contours = pv.merge(extracted_cuts)
+    surfaces = pv.merge(extracted_surfaces)
 
-    all_extracted.save("all_extracted.vtp")
-    all_surfaces.save("all_surfaces.vtp")
+    return contours, surfaces
 
-    full_model = pv.read("david_vdm_warped.vtp")
-    extracted_cuts_warped = []
-    extracted_surfaces_warped = []
 
-    for i in range(len(new_points_warped)):
-        roi = pv.Sphere(center=new_points_warped[i], radius=35)
+def main():
+    # load the data
+    centerline_diastole = pv.read("David/Centerline_model_David.vtp")
+    centerline_systole = pv.read("David/Centerline warped.vtp")
+    full_surface_diastole = pv.read("David/david_vdm.vtp")
+    full_surface_systole = pv.read(
+        "David/david_vdm_warped.vtp",
+    )  # could also just warp by vector on diastole but oh well
 
-        test_slice = full_model.slice(origin=new_points_warped[i], normal=first_deriv_warped[i])
-        test_slice.clear_data()
+    # Fit splines to the centerline points
+    centerline_diastole_spline = fit_spline(centerline_diastole)
+    centerline_systole_spline = fit_spline(centerline_systole)
 
-        extracted = test_slice.clip_surface(roi, invert=True)
-        extracted_surf = extracted.delaunay_2d()
+    centerline_diastole_spline.save("David/David_spline_centerline_diastole.vtp")
+    centerline_systole_spline.save("David/David_spline_centerline_systole.vtp")
 
-        lengths = extracted.compute_cell_sizes()
+    all_extracted_diastole, all_surfaces_diastole = circularity_contours(
+        full_surface_diastole,
+        centerline_diastole_spline,
+        clip_radius=35.0,
+    )
+    all_extracted_systole, all_surfaces_systole = circularity_contours(
+        full_surface_systole,
+        centerline_systole_spline,
+        clip_radius=38.0,
+    )
 
-        perimeter = np.sum(lengths["Length"])
-        extracted.cell_data.set_scalars(np.ones(extracted.n_cells) * perimeter, "Perimeter")
-        extracted.cell_data.set_scalars(
-            np.ones(extracted.n_cells) * circularity(extracted_surf.area, perimeter), "Circularity"
-        )
+    all_extracted_diastole.save("David/david_diastole_contours.vtp")
+    all_surfaces_diastole.save("David/david_diastole_cross_sections.vtp")
 
-        extracted_cuts_warped.append(extracted)
-        extracted_surfaces_warped.append(extracted_surf)
+    all_extracted_systole.save("David/david_systole_contours.vtp")
+    all_surfaces_systole.save("David/david_systole_cross_sections.vtp")
 
-    all_extracted = pv.merge(extracted_cuts_warped)
-    all_surfaces = pv.merge(extracted_surfaces_warped)
+    fig, ax = plt.subplots(1, 2, figsize=(12, 6), layout="constrained")
+    ax[0].set_title("Diastole Contours")
+    ax[1].set_title("Systole Contours")
 
-    all_extracted.save("all_extracted_warped.vtp")
-    all_surfaces.save("all_surfaces_warped.vtp")
+    ax[0].plot(all_extracted_diastole["Circularity"])
+    ax[1].plot(all_extracted_systole["Circularity"])
+
+    plt.show()
 
 
 if __name__ == "__main__":
