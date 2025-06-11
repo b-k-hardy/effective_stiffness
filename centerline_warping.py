@@ -3,7 +3,47 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
 import scienceplots
-from scipy.interpolate import BSpline, make_splprep
+from scipy.interpolate import make_splprep
+
+
+# NOTE: copied from other script, need to refactor a bit
+def centerline_nearest_neighbor_mapping(
+    centerline_spline: pv.PolyData,
+    mesh: pv.PolyData,
+) -> None:
+    """Run this function AFTER making centerline spline and finding circularity and arc length.
+
+    Args:
+        centerline_spline (pv.PolyData): _description_
+        mesh (pv.PolyData): _description_
+
+    """
+    # loop through the mesh points and find the nearest centerline point. Take values at that point and assign to the mesh point.
+    mesh_circularity = np.zeros(mesh.n_points)
+    mesh_arc_length = np.zeros(mesh.n_points)
+    centerline_displacement = np.zeros((mesh.n_points, 3))
+    additional_displacement = np.zeros((mesh.n_points, 3))
+    mesh_circularity.fill(np.nan)  # fill with NaN to make sure points that aren't assigned stand out when debugging
+    mesh_arc_length.fill(np.nan)
+    centerline_displacement.fill(np.nan)
+    additional_displacement.fill(np.nan)
+
+    for i, mesh_point in enumerate(mesh.points):
+        # find the nearest centerline point
+        centerline_points = centerline_spline.points
+        # calculate the distance from the node to each centerline point and find the index of the closest centerline point
+        centerline_idx = np.argmin(np.linalg.norm(centerline_points - mesh_point, axis=1))
+        # assign the circularity and arc length values from the centerline to the mesh point
+        mesh_circularity[i] = centerline_spline["Circularity"][centerline_idx]
+        mesh_arc_length[i] = centerline_spline["arc_length"][centerline_idx]
+        centerline_displacement[i] = centerline_spline["Displacement"][centerline_idx]
+        additional_displacement[i] = mesh["Displacement"][i] - centerline_spline["Displacement"][centerline_idx]
+
+    # assign the circularity and arc length values to the mesh point data
+    mesh.point_data.set_array(mesh_circularity, "Circularity")
+    mesh.point_data.set_array(mesh_arc_length, "arc_length")
+    mesh.point_data.set_array(centerline_displacement, "Centerline Displacement")
+    mesh.point_data.set_array(additional_displacement, "Additional Displacement")
 
 
 def calc_circularity(area: float, perimeter: float) -> float:
@@ -14,7 +54,12 @@ def calc_circularity(area: float, perimeter: float) -> float:
 # def distance_along_centerline = pv.filters.DistanceAlongLine()
 
 
-def fit_spline(centerline: pv.PolyData, smoothness: float = 10, reverse: bool = False) -> pv.PolyData:
+def fit_spline(
+    centerline: pv.PolyData,
+    n_spline_points: int = 500,
+    smoothness: float = 10,
+    reverse: bool = False,
+) -> pv.PolyData:
     """Fit spline to the centerline points.
 
     Args:
@@ -30,6 +75,7 @@ def fit_spline(centerline: pv.PolyData, smoothness: float = 10, reverse: bool = 
     points = centerline.points[::-1] if reverse else centerline.points
 
     spline_function, u = make_splprep([points[:, 0], points[:, 1], points[:, 2]], s=smoothness)
+    u = np.linspace(0, 1, n_spline_points)
     new_points = spline_function(u)
     first_deriv = spline_function(u, nu=1)
 
@@ -97,8 +143,8 @@ def main():
     centerline_diastole_spline = centerline_diastole_spline.compute_arc_length()
     centerline_systole_spline = centerline_systole_spline.compute_arc_length()
 
-    centerline_diastole_spline.save("David/David_spline_centerline_diastole.vtp")
-    centerline_systole_spline.save("David/David_spline_centerline_systole.vtp")
+    centerline_displacement = centerline_systole_spline.points - centerline_diastole_spline.points
+    centerline_diastole_spline.point_data.set_vectors(centerline_displacement, "Displacement")
 
     all_extracted_diastole, all_surfaces_diastole, circularity_diastole = circularity_contours(
         full_surface_diastole,
@@ -111,11 +157,26 @@ def main():
         clip_radius=38.0,
     )
 
+    centerline_diastole_spline.point_data.set_scalars(circularity_diastole, "Circularity")
+    centerline_systole_spline.point_data.set_scalars(circularity_systole, "Circularity")
+
+    centerline_nearest_neighbor_mapping(centerline_diastole_spline, full_surface_diastole)
+    # centerline_nearest_neighbor_mapping(centerline_systole_spline, full_surface_systole)
+
+    centerline_diastole_spline.save("David/David_spline_centerline_diastole.vtp")
+    centerline_systole_spline.save("David/David_spline_centerline_systole.vtp")
+
     all_extracted_diastole.save("David/david_diastole_contours.vtp")
     all_surfaces_diastole.save("David/david_diastole_cross_sections.vtp")
 
     all_extracted_systole.save("David/david_systole_contours.vtp")
     all_surfaces_systole.save("David/david_systole_cross_sections.vtp")
+
+    full_surface_diastole.save("David/david_diastole_surface.vtp")
+    # full_surface_systole.save("David/david_systole_surface.vtp")
+
+    # NEXT: need a way to associate the surface nodes with the centerline nodes... nearest neighbor for now? Then check in paraview
+    # NOTE: I kind of do this already in a different script... just find that and copy?
 
     # %%
 
@@ -123,16 +184,15 @@ def main():
         fig, ax = plt.subplots(figsize=(8, 4), layout="constrained")
         ax.set_title("Circularity of Aortic Cross-Sections")
 
-        # problem: SPACING IS NOT UNIFORM...
         ax.plot(
             centerline_diastole_spline["arc_length"] / centerline_diastole_spline["arc_length"][-1],
             circularity_diastole,
-            label=f"Diastole (length = {centerline_diastole_spline['arc_length'][-1]:.2f})",
+            label=f"Diastole (length = {centerline_diastole_spline['arc_length'][-1]:.2f} mm)",
         )
         ax.plot(
             centerline_systole_spline["arc_length"] / centerline_systole_spline["arc_length"][-1],
             circularity_systole,
-            label=f"Systole (length = {centerline_systole_spline['arc_length'][-1]:.2f})",
+            label=f"Systole (length = {centerline_systole_spline['arc_length'][-1]:.2f} mm)",
         )
         ax.set_xlabel("Normalized Arc Length")
         ax.set_ylabel("Circularity")
