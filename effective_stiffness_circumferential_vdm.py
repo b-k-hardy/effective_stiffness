@@ -26,42 +26,6 @@ def weighted_least_squares(x_array: np.ndarray, y_array: np.ndarray, weight_arra
     return np.linalg.inv(x_array.T @ np.diag(weight_array) @ x_array) @ x_array.T @ np.diag(weight_array) @ y_array
 
 
-def estimate_normal(
-    central_node_idx: np.ndarray,
-    diastolic_normals: np.ndarray,
-    neighbor_triangle_indices: np.ndarray,
-    xyz: np.ndarray,
-):
-    # take in the relevent triangle indices and calculate the normal
-    # need to check orientation of each cell normal with the norms.D file that Mia gave me
-    # this is not something I'll always have, but it's a good place to start :D
-    # then find average normal
-
-    normals = np.zeros((neighbor_triangle_indices.shape[0], 3))
-
-    for i in range(neighbor_triangle_indices.shape[0]):
-        # calculate normal
-        # check orientation
-        # if correct, return normal
-        # else, return -normal
-        point1 = xyz[neighbor_triangle_indices[i, 0]]
-        point2 = xyz[neighbor_triangle_indices[i, 1]]
-        point3 = xyz[neighbor_triangle_indices[i, 2]]
-        vec1 = point2 - point1
-        vec2 = point3 - point1
-        normal = np.cross(vec1, vec2)
-
-        if np.dot(normal, diastolic_normals[central_node_idx]) > 0:
-            normal = normal / np.linalg.norm(normal)
-        else:
-            normal = -normal / np.linalg.norm(normal)
-        normals[i] = normal
-
-    avg_normal = np.mean(normals, axis=0)
-
-    return avg_normal / np.linalg.norm(avg_normal)
-
-
 def find_circumferential_direction(
     centerline_points: np.ndarray,
     centerline_normals: np.ndarray,
@@ -128,21 +92,19 @@ def construct_systolic_vector(
 
 def main():
     # load in the data!
-    # centerline data
-    source_directory = "UM16"
-    smoothed_centerline = pv.read(f"{source_directory}/new_points.vtp")
-    centerline_points = smoothed_centerline.points
-    centerline_normals = smoothed_centerline.point_data["Derivative"]
+    source_directory = "David"
+    smoothed_centerline = pv.read(f"{source_directory}/David_spline_centerline_systole.vtp")
+    # NOTE: need to be using the SYSTOLE centerline here since we warp to the systole centerline prior to strain calculation
+    vdm = pv.read(f"{source_directory}/david_diastole_surface.vtp")
 
-    # vdm and mesh data
-    vdm = pv.read(f"{source_directory}/UM16_VDM-D.vtp")
+    # data operations
+    vdm = vdm.warp_by_vector("Centerline Displacement")
     diastole_nodes = vdm.points
-    diastole_normals = vdm.point_data["SurfaceNormals"]  # I really don't know if this is the diastolic normal or not
-    displacement = vdm.point_data["Displacement"]
-    systole_nodes = diastole_nodes + displacement
+    diastole_normals = vdm.compute_normals()
+    diastole_normals = diastole_normals.point_data["Normals"]
 
-    # NOTE: TEST to see if this gives normals:
-    vdm_systole = vdm.warp_by_vector("Displacement")
+    vdm_systole = vdm.warp_by_vector("Distance to Nearest Implicit Surface Point PYVISTA")
+    systole_nodes = vdm_systole.points
 
     systole_normals = vdm_systole.compute_normals()
     systole_normals = systole_normals.point_data["Normals"]
@@ -161,7 +123,6 @@ def main():
         circumferential_strain = np.zeros(diastole_nodes.shape[0])
         node_stiffness_wall = np.zeros(diastole_nodes.shape[0])
         node_stiffness_wall_proper = np.zeros(diastole_nodes.shape[0])
-        systolic_node_normals = np.zeros((diastole_nodes.shape[0], 3))
         systolic_circumferential_normals = np.zeros((diastole_nodes.shape[0], 3))
 
         # shit this index is actually important lol...
@@ -173,14 +134,6 @@ def main():
             neighbor_points_idx = np.array(neighbor_points_idx)
 
             # NOTE: the code above actually distinguishes between the neighbor level away... could maybe use this thing OUTSIDE of the loop...
-
-            # Oh fuck I actually need the adjacent triangles here...
-            # systolic_node_normal = estimate_normal(
-            #    node_idx,
-            #    diastole_normals,
-            #    neighbor_points_idx,
-            #    systole_nodes,
-            # )
 
             diastolic_matrix = construct_diastolic_matrix(
                 node_idx,
@@ -207,24 +160,23 @@ def main():
             def_gradient_determinant[node_idx] = np.linalg.det(deformation_gradient)
 
             circumferential_normal = find_circumferential_direction(
-                centerline_points,
-                centerline_normals,
+                smoothed_centerline.points,
+                smoothed_centerline.point_data["Derivative"],
                 diastole_normals[node_idx],
                 diastole_nodes[node_idx],
             )
             circumferential_strain[node_idx] = np.linalg.norm(np.dot(deformation_gradient, circumferential_normal)) ** 2
             # node_stiffness_wall_proper[node_idx] = pressure_delta[node_idx] / (circumferential_strain[node_idx] - 1)
             # node_stiffness_wall[node_idx] = pressure_delta[node_idx] / circumferential_strain[node_idx]
-            # systolic_node_normals[node_idx] = systolic_node_normal
             systolic_circumferential_normals[node_idx] = circumferential_normal
 
         def_gradient_determinant[def_gradient_determinant == 0] = np.nan
         circumferential_strain[circumferential_strain == 0] = np.nan
         node_stiffness_wall[node_stiffness_wall == 0] = np.nan
-        systolic_node_normals[systolic_node_normals[:, 0] == 0, :] = np.nan
+        # systolic_node_normals[systolic_node_normals[:, 0] == 0, :] = np.nan
         systolic_circumferential_normals[systolic_circumferential_normals[:, 0] == 0, :] = np.nan
 
-        results = pv.PolyData(diastole_nodes)
+        # results = pv.PolyData(diastole_nodes)
 
         # maybe just add to existing dataset but then save as something new...
         vdm.point_data.set_vectors(systolic_circumferential_normals, "Systolic Circumferential Direction")
@@ -232,10 +184,10 @@ def main():
         vdm.point_data.set_scalars(circumferential_strain - 1, "Circumferential Strain")
         # vdm.point_data.set_scalars(node_stiffness_wall_proper, "Effective Stiffness")
         # vdm.point_data.set_scalars(node_stiffness_wall, "Node Stiffness Wall")
-        vdm.point_data.set_vectors(systolic_node_normals, "Systolic Radial Direction")
+        vdm.point_data.set_vectors(systole_normals, "Systolic Radial Direction")
         vdm.point_data.set_vectors(diastole_normals, "Diastolic Radial Direction")
 
-        vdm.save(f"VDM_modified_{neighbor_extent}.vtp")
+        vdm.save(f"David_VDM_modified_{neighbor_extent}_centerline_adjustment_displacement_adjustment.vtp")
 
 
 if __name__ == "__main__":
