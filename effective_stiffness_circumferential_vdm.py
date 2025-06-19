@@ -31,7 +31,7 @@ def find_circumferential_direction(
     centerline_normals: np.ndarray,
     surface_normal: np.ndarray,
     node_xyz: np.ndarray,
-):
+) -> np.ndarray:
     # find the closest point on the centerline
     # find the normal at that point
     # find the circumferential direction
@@ -173,7 +173,6 @@ def main():
         def_gradient_determinant[def_gradient_determinant == 0] = np.nan
         circumferential_strain[circumferential_strain == 0] = np.nan
         node_stiffness_wall[node_stiffness_wall == 0] = np.nan
-        # systolic_node_normals[systolic_node_normals[:, 0] == 0, :] = np.nan
         systolic_circumferential_normals[systolic_circumferential_normals[:, 0] == 0, :] = np.nan
 
         # results = pv.PolyData(diastole_nodes)
