@@ -3,11 +3,41 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
 import scienceplots
-import vtkmodules.util.vtkConstants as vtk
 from scipy.interpolate import make_splprep
-from scipy.spatial import KDTree
-from vtkmodules import vtkCommonCore
-from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkStaticCellLocator
+
+
+def surface_ray_tracing_displacement(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
+    mesh_d = mesh_d.warp_by_vector("Centerline Displacement")
+    mesh_d = mesh_d.compute_normals(point_normals=True, cell_normals=False, auto_orient_normals=True)
+
+    mesh_d["Ray Tracing Displacement"] = np.empty((mesh_d.n_points, 3))
+    for i in range(mesh_d.n_points):
+        p = mesh_d.points[i]
+        vec = (
+            mesh_d["Normals"][i] * 3
+        )  # 10 mm ray length... original example javi sent isn't good for closed surfaces...
+        p0 = p - vec
+        p1 = p + vec
+        ip, ic = mesh_s.ray_trace(p, p1 + vec, first_point=True)
+        if ip.size == 0:
+            ip, ic = mesh_s.ray_trace(
+                p,
+                p - vec,
+                first_point=True,
+            )  # Try the other direction if no intersection found... this actually doesn't make any sense given the original vector length but whatever...
+        if ip.size == 0:
+            print(f"Warning: No intersection found for point {i} at {p}.")
+            ip = p
+        # dist = np.sqrt(np.sum((ip - p) ** 2))
+        mesh_d["Ray Tracing Displacement"][i] = ip - p
+
+    # Replace zeros with nans
+    mask = mesh_d["Ray Tracing Displacement"] == 0
+    mesh_d["Ray Tracing Displacement"][mask] = np.nan
+    # np.nanmean(h0n["distances"])
+
+    mesh_d = mesh_d.warp_by_vector("Centerline Displacement", factor=-1.0)  # Reverse the warping direction
+    return mesh_d
 
 
 def pyvista_surface_nearest_neighbor_mapping(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
@@ -20,77 +50,6 @@ def pyvista_surface_nearest_neighbor_mapping(mesh_d: pv.PolyData, mesh_s: pv.Pol
     )
     mesh_d = mesh_d.warp_by_vector("Centerline Displacement", factor=-1.0)  # Reverse the warping direction
 
-    return mesh_d
-
-
-# USELESS FUNCTION NOW
-def new_surface_nearest_neighbor_mapping(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
-    mesh_d = mesh_d.warp_by_vector("Centerline Displacement")
-    # vtk_mesh = mesh_d.GetDataObject()  # Get the underlying VTK mesh from the PyVista PolyData
-    # not sure if I have to do this...
-
-    # Step 2: Create a spatial locator for the mesh
-    # This builds an acceleration structure (like a BVH) for fast closest-point queries
-    locator = vtkStaticCellLocator()
-    locator.SetDataSet(mesh_s)  # Assign the mesh
-    locator.BuildLocator()  # Preprocess for fast spatial queries
-
-    # Step 3: Define the point you're querying from
-    points = mesh_d.points  # Points from the source mesh (e.g., systole)
-
-    displacements = []
-    for point in points:
-        # Step 4: Prepare VTK-compatible variables to receive results
-        closest_point = [0.0, 0.0, 0.0]  # Will hold closest point coordinates
-        cell_id = vtkCommonCore.reference(0)  # Will hold the ID of the cell found
-        sub_id = vtkCommonCore.reference(0)  # Will hold sub-ID inside the cell (e.g., triangle index)
-        dist2 = vtkCommonCore.reference(0.0)  # Will hold squared distance result
-
-        # Step 5: Query the locator for the closest point on the mesh to the given point
-        locator.FindClosestPoint(
-            point,  # The input query point
-            closest_point,  # Output: closest point on the mesh
-            cell_id,  # Output: cell ID (not used here, but required)
-            sub_id,  # Output: sub ID
-            dist2,  # Output: squared distance (not used directly here)
-        )
-
-        # Step 6: Convert result to NumPy array for easy math
-        closest_point_np = np.array(closest_point)
-
-        # Step 7: Compute the vector from the original point to the closest point
-        displacements.append(closest_point_np - point)
-
-    displacements = np.array(displacements)
-    mesh_d.point_data.set_vectors(
-        displacements,
-        "Distance to Nearest Implicit Surface Point",
-    )
-    mesh_d = mesh_d.warp_by_vector("Centerline Displacement", factor=-1.0)  # Reverse the warping direction
-
-    return mesh_d
-
-
-# wrong distance
-def surface_nearest_neighbor_mapping(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
-    """Find the nearest neighbor indices in mesh_s for each point in mesh_d.
-
-    Args:
-        mesh_d (pv.PolyData): Source mesh (e.g., diastole).
-        mesh_s (pv.PolyData): Target mesh (e.g., systole).
-
-    Returns:
-        np.ndarray: Array of indices in mesh_s corresponding to nearest neighbors for each point in mesh_d.
-
-    """
-    mesh_d = mesh_d.warp_by_vector("Centerline Displacement")
-    tree = KDTree(mesh_d.points)
-    distances, indices = tree.query(mesh_s.points)
-    mesh_d.point_data.set_vectors(
-        mesh_s.points[indices] - mesh_d.points,
-        "Distance to Nearest Neighbor",
-    )
-    mesh_d = mesh_d.warp_by_vector("Centerline Displacement", factor=-1.0)  # Reverse the warping direction
     return mesh_d
 
 
@@ -161,6 +120,7 @@ def fit_spline(
 
     """
     points = centerline.points[::-1] if reverse else centerline.points
+    # FIXME: just make this thing use the topology or something... is that even possible or are we gonna have a bunch of fucked up tiny lines
 
     spline_function, u = make_splprep([points[:, 0], points[:, 1], points[:, 2]], s=smoothness)
     u = np.linspace(0, 1, n_spline_points)
@@ -249,12 +209,8 @@ def main():
     centerline_systole_spline.point_data.set_scalars(circularity_systole, "Circularity")
 
     centerline_nearest_neighbor_mapping(centerline_diastole_spline, full_surface_diastole)
-
-    # tests to remove
-    full_surface_diastole = surface_nearest_neighbor_mapping(full_surface_diastole, full_surface_systole)
-    full_surface_diastole = new_surface_nearest_neighbor_mapping(full_surface_diastole, full_surface_systole)
-    # keep
     full_surface_diastole = pyvista_surface_nearest_neighbor_mapping(full_surface_diastole, full_surface_systole)
+    full_surface_diastole = surface_ray_tracing_displacement(full_surface_diastole, full_surface_systole)
     # centerline_nearest_neighbor_mapping(centerline_systole_spline, full_surface_systole)
 
     centerline_diastole_spline.save("David/David_spline_centerline_diastole.vtp")
@@ -266,7 +222,10 @@ def main():
     all_extracted_systole.save("David/david_systole_contours.vtp")
     all_surfaces_systole.save("David/david_systole_cross_sections.vtp")
 
-    full_surface_diastole.save("David/david_diastole_surface.vtp")
+    full_surface_diastole.save(
+        "David/david_diastole_surface_ray_tracing.vtp",
+    )
+    # NOTE: CHANGE NAME OF OLD FILE IF YOU WANT TO KEEP IT
     # full_surface_systole.save("David/david_systole_surface.vtp")
 
     # NEXT: need a way to associate the surface nodes with the centerline nodes... nearest neighbor for now? Then check in paraview
