@@ -1,9 +1,97 @@
+import itertools
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
 import scienceplots
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 from scipy.interpolate import make_splprep
 from scipy.spatial.transform import Rotation as R
+
+
+def build_combinatorial_laplacian(mesh: pv.PolyData):
+    n = len(mesh.points)
+    rows, cols = [], []
+
+    # Loop over all edges
+    for i in range(len(mesh.points)):
+        neighbors = mesh.point_neighbors(i)
+        for j in neighbors:
+            rows.append(i)
+            cols.append(j)
+
+    # Off-diagonal entries: -1 for each neighbor
+    data = -np.ones(len(rows))
+    L = sp.coo_matrix((data, (rows, cols)), shape=(n, n))
+
+    # Diagonal: degree of each vertex
+    degrees = np.array([len(mesh.point_neighbors(i)) for i in range(n)])
+    L += sp.diags(degrees)
+
+    return L.tocsr()
+
+
+def laplacian_smoothing(mesh: pv.PolyData, fixed_idx: np.ndarray = None) -> pv.PolyData:
+    V = mesh.points.copy()
+    n = V.shape[0]
+
+    L = build_combinatorial_laplacian(mesh)
+
+    # Solve LᵀL V = 0 using normal equations
+    A = L.T @ L
+
+    # Handle constraints
+    if fixed_idx is not None and len(fixed_idx) > 0:
+        free_idx = np.setdiff1d(np.arange(n), fixed_idx)
+
+        A_ff = A[free_idx][:, free_idx]
+        A_fc = A[free_idx][:, fixed_idx]
+        V_fixed = V[fixed_idx]
+
+        # RHS is -A_fc @ V_fixed for each coordinate (x, y, z)
+        V_new = V.copy()
+        for dim in range(3):
+            rhs = -A_fc @ V_fixed[:, dim]
+            V_new[free_idx, dim] = spla.spsolve(A_ff, rhs)
+
+    # Unconstrained smoothing (not recommended—mesh may collapse)
+    else:
+        V_new = np.zeros_like(V)
+        for dim in range(3):
+            V_new[:, dim] = spla.spsolve(A, np.zeros(n))
+
+    mesh.points = V_new
+    return mesh
+
+
+def fxn(x):
+    # distance function to use with map()... if that makes sense
+    return None
+
+
+def laplacian_smoothing_weighted(
+    mesh: pv.PolyData,
+    weight: float,
+    n_iter: int = 100,
+    n_neighbors: int = 1,
+) -> pv.PolyData:
+    # construct matrix for laplacian smoothing...
+    laplacian_matrix = np.zeros((mesh.n_points, mesh.n_points))
+    # loop over rows
+    for i in range(mesh.n_points):
+        # find the neighbors of the point depending on the n_neighbors parameter
+        neighbor_points_idx = mesh.point_neighbors_levels(i, n_neighbors)
+        neighbor_points_idx = list(itertools.chain.from_iterable(neighbor_points_idx))
+
+        # might be able to use map() or something efficient to also find the length from the original point to the neighbors
+        # and then use that to weight the laplacian matrix
+
+        # when done just put results in correct spot in row...
+
+    neighbor_points_idx = np.array(neighbor_points_idx)
+
+    return None
 
 
 def surface_ray_tracing_displacement(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
@@ -13,9 +101,7 @@ def surface_ray_tracing_displacement(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -
     mesh_d["Ray Tracing Displacement"] = np.empty((mesh_d.n_points, 3))
     for i in range(mesh_d.n_points):
         p = mesh_d.points[i]
-        vec = (
-            mesh_d["Normals"][i] * 3
-        )  # 10 mm ray length... original example javi sent isn't good for closed surfaces...
+        vec = mesh_d["Normals"][i] * 3
         p0 = p - vec
         p1 = p + vec
         ip, ic = mesh_s.ray_trace(p, p1 + vec, first_point=True)
@@ -40,7 +126,7 @@ def surface_ray_tracing_displacement(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -
     return mesh_d
 
 
-def pyvista_surface_nearest_neighbor_mapping(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
+def nearest_surface_neighbor_mapping(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
     mesh_d = mesh_d.warp_by_vector("Centerline Displacement")
     closest_cells, closest_points = mesh_s.find_closest_cell(mesh_d.points, return_closest_point=True)
     displacements = closest_points - mesh_d.points
@@ -54,6 +140,7 @@ def pyvista_surface_nearest_neighbor_mapping(mesh_d: pv.PolyData, mesh_s: pv.Pol
 
 
 # NOTE: copied from other script, need to refactor a bit
+# FIXME: need to split this function up...
 def centerline_nearest_neighbor_mapping(
     centerline_spline: pv.PolyData,
     mesh: pv.PolyData,
@@ -144,6 +231,7 @@ def fit_spline(
 
     spline_polydata = pv.PolyData(new_points, lines=[new_points.shape[0]] + np.arange(new_points.shape[0]).tolist())
     spline_polydata.point_data.set_vectors(first_deriv, "Derivative")
+    spline_polydata = spline_polydata.compute_arc_length()
 
     return spline_polydata
 
@@ -152,11 +240,10 @@ def circularity_contours(
     full_surface: pv.PolyData,
     centerline_sp: pv.PolyData,
     clip_radius: float = 35.0,
-) -> tuple[pv.PolyData, pv.PolyData, np.ndarray, np.ndarray]:
+) -> tuple[pv.PolyData, pv.PolyData, np.ndarray]:
     extracted_cuts = []
     extracted_surfaces = []
     circularity_array = []
-    circumferential_zero_vectors = []
 
     for i in range(centerline_sp.n_points):
         roi = pv.Sphere(center=centerline_sp.points[i], radius=clip_radius)
@@ -178,14 +265,31 @@ def circularity_contours(
         extracted_cuts.append(extracted)
         extracted_surfaces.append(extracted_surf)
 
-        circ0 = np.cross(centerline_sp["Derivative"][i], np.array([-1, 0, 0]))
-        circumferential_zero_vectors.append(circ0 / np.linalg.norm(circ0))
-
     contours = pv.merge(extracted_cuts)
     surfaces = pv.merge(extracted_surfaces)
 
     # NOTE: potentially return u from make_splprep to use for plotting... need to figure out what it means EXACTLY
-    return contours, surfaces, np.array(circularity_array), np.array(circumferential_zero_vectors)
+    return contours, surfaces, np.array(circularity_array)
+
+
+def establish_zero_vector(centerline: pv.PolyData, cross_vector: np.ndarray = None) -> pv.PolyData:
+    if cross_vector is None:
+        cross_vector = np.array([-1, 0, 0])
+
+    circumferential_zero_vectors = []
+    for i in range(centerline.n_points):
+        circ0 = np.cross(centerline["Derivative"][i], cross_vector)
+        circumferential_zero_vectors.append(circ0 / np.linalg.norm(circ0))
+
+    centerline["zero_vector"] = np.array(circumferential_zero_vectors)
+
+    return centerline
+
+
+def circularity_analysis():
+    # use the circularity_contours function
+    # then take the stuff from the centerline mapping function and put it here...
+    return -1
 
 
 def main():
@@ -199,38 +303,33 @@ def main():
     full_surface_systole = pv.read(f"{data_directory}/david_vdm_warped.vtp")
     # could also just warp by vector on diastole but oh well
 
-    # Fit splines to the centerline points
+    # Fit splines to the centerline points and compute displacement
     centerline_diastole_spline = fit_spline(centerline_diastole)
     centerline_systole_spline = fit_spline(centerline_systole, reverse=True)
-    # add arc length to the spline
-    centerline_diastole_spline = centerline_diastole_spline.compute_arc_length()
-    centerline_systole_spline = centerline_systole_spline.compute_arc_length()
-
     centerline_displacement = centerline_systole_spline.points - centerline_diastole_spline.points
     centerline_diastole_spline.point_data.set_vectors(centerline_displacement, "Displacement")
+    centerline_diastole_spline = establish_zero_vector(centerline_diastole_spline)
+    centerline_systole_spline = establish_zero_vector(centerline_systole_spline)
 
-    all_extracted_diastole, all_surfaces_diastole, circularity_diastole, circumferential_zero_vectors_diastole = (
-        circularity_contours(
-            full_surface_diastole,
-            centerline_diastole_spline,
-            clip_radius=50.0,
-        )
+    # NOTE: create separate function for the zero vector calculation...
+    all_extracted_diastole, all_surfaces_diastole, circularity_diastole = circularity_contours(
+        full_surface_diastole,
+        centerline_diastole_spline,
+        clip_radius=50.0,
     )
-    all_extracted_systole, all_surfaces_systole, circularity_systole, circumferential_zero_vectors_systole = (
-        circularity_contours(
-            full_surface_systole,
-            centerline_systole_spline,
-            clip_radius=50.0,
-        )
+    all_extracted_systole, all_surfaces_systole, circularity_systole = circularity_contours(
+        full_surface_systole,
+        centerline_systole_spline,
+        clip_radius=50.0,
     )
 
-    centerline_diastole_spline["Circularity"] = circularity_diastole
+    centerline_diastole_spline["Circularity"] = (
+        circularity_diastole  # only storing on the spline because of the dumbass way I've set up this function
+    )
     centerline_systole_spline["Circularity"] = circularity_systole
-    centerline_diastole_spline["zero_vector"] = circumferential_zero_vectors_diastole
-    centerline_systole_spline["zero_vector"] = circumferential_zero_vectors_systole
 
     centerline_nearest_neighbor_mapping(centerline_diastole_spline, full_surface_diastole)
-    full_surface_diastole = pyvista_surface_nearest_neighbor_mapping(full_surface_diastole, full_surface_systole)
+    full_surface_diastole = nearest_surface_neighbor_mapping(full_surface_diastole, full_surface_systole)
 
     s = full_surface_diastole["arc_length"] / centerline_diastole_spline["arc_length"][-1]
     theta = (full_surface_diastole["Circumferential Coordinate"] + np.pi) / (2 * np.pi)
@@ -244,6 +343,7 @@ def main():
     full_surface_diastole.point_data.set_vectors(s_grad, name="s_gradient")
     full_surface_diastole.point_data.set_vectors(theta_grad, name="theta_gradient")
 
+    # Save the results
     centerline_diastole_spline.save(f"{data_directory}/David_spline_centerline_diastole.vtp")
     centerline_systole_spline.save(f"{data_directory}/David_spline_centerline_systole.vtp")
 
@@ -256,21 +356,79 @@ def main():
     full_surface_diastole.save(f"{data_directory}/david_diastole_surface.vtp")
     full_surface_systole.save("David/david_systole_surface.vtp")
 
+    # Smoothing and displacement analysis BELOW (for now -- putting it below initial saves)
+    # Do full warping to the systolic state
     full_surface_diastole_warped = full_surface_diastole.warp_by_vector("Centerline Displacement")
     full_surface_diastole_warped = full_surface_diastole_warped.warp_by_vector("Nearest Surface Point Displacement")
 
+    # NEW: try smoothing the displacement to see what happens. Compute derivative after smoothing SEPARATELY
+    full_surface_diastole_warped_smoothed = full_surface_diastole_warped.smooth(n_iter=1000)
+    full_surface_diastole_warped_smoothed_taubin = full_surface_diastole_warped.smooth_taubin(n_iter=100)
+
+    num_fixed = 1000
+    rng = np.random.default_rng()
+    fixed_idx = rng.choice(full_surface_diastole_warped.n_points, size=num_fixed, replace=False)
+    full_surface_diastole_warped_smoothed_test = laplacian_smoothing(
+        full_surface_diastole_warped,
+        fixed_idx=fixed_idx,
+    )  # picking random  points to fix and seeing what happens
+
+    # compute the gradient of the surface coordinates after warping or warping+smoothing
     full_surface_diastole_warped = full_surface_diastole_warped.compute_derivative(scalars="surface_coordinates")
     s_grad = full_surface_diastole_warped["gradient"][:, :3]
     theta_grad = full_surface_diastole_warped["gradient"][:, 3:]
     full_surface_diastole_warped.point_data.set_vectors(s_grad, name="s_gradient")
     full_surface_diastole_warped.point_data.set_vectors(theta_grad, name="theta_gradient")
 
+    full_surface_diastole_warped_smoothed = full_surface_diastole_warped_smoothed.compute_derivative(
+        scalars="surface_coordinates",
+    )
+    s_grad_smoothed = full_surface_diastole_warped_smoothed["gradient"][:, :3]
+    theta_grad_smoothed = full_surface_diastole_warped_smoothed["gradient"][:, 3:]
+    full_surface_diastole_warped_smoothed.point_data.set_vectors(s_grad_smoothed, name="s_gradient")
+    full_surface_diastole_warped_smoothed.point_data.set_vectors(theta_grad_smoothed, name="theta_gradient")
+
+    full_surface_diastole_warped_smoothed_taubin = full_surface_diastole_warped_smoothed_taubin.compute_derivative(
+        scalars="surface_coordinates",
+    )
+    s_grad_smoothed_taubin = full_surface_diastole_warped_smoothed_taubin["gradient"][:, :3]
+    theta_grad_smoothed_taubin = full_surface_diastole_warped_smoothed_taubin["gradient"][:, 3:]
+    full_surface_diastole_warped_smoothed_taubin.point_data.set_vectors(
+        s_grad_smoothed_taubin,
+        name="s_gradient",
+    )
+    full_surface_diastole_warped_smoothed_taubin.point_data.set_vectors(
+        theta_grad_smoothed_taubin,
+        name="theta_gradient",
+    )
+
+    full_surface_diastole_warped_smoothed_test = full_surface_diastole_warped_smoothed_test.compute_derivative(
+        scalars="surface_coordinates",
+    )
+    s_grad_smoothed_test = full_surface_diastole_warped_smoothed_test["gradient"][:, :3]
+    theta_grad_smoothed_test = full_surface_diastole_warped_smoothed_test["gradient"][:, 3:]
+    full_surface_diastole_warped_smoothed_test.point_data.set_vectors(
+        s_grad_smoothed_test,
+        name="s_gradient",
+    )
+    full_surface_diastole_warped_smoothed_test.point_data.set_vectors(
+        theta_grad_smoothed_test,
+        name="theta_gradient",
+    )
+
     full_surface_diastole_warped.save(f"{data_directory}/david_diastole_surface_warped.vtp")
+    full_surface_diastole_warped_smoothed.save(f"{data_directory}/david_diastole_surface_warped_smoothed.vtp")
+    full_surface_diastole_warped_smoothed_taubin.save(
+        f"{data_directory}/david_diastole_surface_warped_smoothed_taubin.vtp",
+    )
+    full_surface_diastole_warped_smoothed_test.save(
+        f"{data_directory}/david_diastole_surface_warped_smoothed_test.vtp",
+    )
 
     # NEXT: need a way to associate the surface nodes with the centerline nodes... nearest neighbor for now? Then check in paraview
     # NOTE: I kind of do this already in a different script... just find that and copy?
 
-    if PLOT:
+    if CIRCULARITY_ANALYSIS:
         with plt.style.context(["science", "notebook"]):
             fig, ax = plt.subplots(figsize=(8, 4), layout="constrained")
             ax.set_title("Circularity of Aortic Cross-Sections")
@@ -299,5 +457,5 @@ def main():
 
 
 if __name__ == "__main__":
-    PLOT = False  # Set to True if you want to plot circularity shifting and the unwrapped surface
+    CIRCULARITY_ANALYSIS = False  # Set to True if you want to plot circularity shifting and the unwrapped surface
     main()
