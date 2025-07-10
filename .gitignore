@@ -1,8 +1,6 @@
-visualizations/
 .DS_Store
-*.D
-*.X
-*.T
-*.pvsm
 .vscode/
-*.vt*
+.venv
+results/*
+data/*
+*.pyc
