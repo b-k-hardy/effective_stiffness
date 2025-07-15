@@ -11,29 +11,19 @@ import scipy.sparse.linalg as spla
 class DisplacementSmoother:
     """Class for smoothing displacements on a mesh."""
 
-    # Big thing: this class structure will make it easier to store things that are needed for the smoother,
-    # such as the connectivity of the mesh etc... (I think?)
     def __init__(
         self,
         mesh: pv.PolyData,
-        smoothing_method: Literal["matrix_solve", "iterative"] = "matrix_solve",
-        max_iter: int = 100,
-        **kwargs: dict,
+        n_neighbors: int = 1,
+        weighting_method: Literal["uniform", "squared"] = "uniform",
     ) -> None:
         self.mesh = mesh
-        self.smoothing_method = smoothing_method
         self.residuals = []
-        n_neighbors = kwargs.get("n_neighbors", 1)
-        weighting_method = kwargs.get("weighting_method", "uniform")
 
-        if smoothing_method == "iterative":
-            relaxation_factor = kwargs.get("relaxation", 0.1)
-        elif smoothing_method == "matrix_solve":
-            weight = kwargs.get("weight", 1000.0)
-
+        # Initialize the laplacian matrix. Guess what: (FUCK) this thing needs to be updating
+        # After each major iteration... (not the iterative method's subiterations with relax factor)
         self.laplacian_matrix = DisplacementSmoother._build_combinatorial_laplacian(
             mesh,
-            relaxation_factor,
             n_neighbors,
             weighting_method,
         )
@@ -76,10 +66,15 @@ class DisplacementSmoother:
 
         return L.tocsr()
 
-    def smoothing_loop(self):
+    def smoothing_loop(
+        self,
+        max_iter: int = 100,
+        weight: float = 1000.0,
+    ) -> None:
         """Loop over the smoothing process."""
         # This method can be used to iterate over the smoothing process
         # and apply the smoothing to the mesh points.
+        self.residuals.clear()  # clear residuals if you'd like to re-run with different weighting
 
         if self.smoothing_method == "matrix_solve":
             smoothed_mesh = self.matrix_laplacian_smoothing(
@@ -116,22 +111,23 @@ class DisplacementSmoother:
         smoothed_mesh.points = V_new
         return smoothed_mesh
 
-    def iterative_matrix_laplacian_smoothing(self, relaxation: float = 0.1) -> pv.PolyData:
-        V = self.mesh.points.copy()
-        n = V.shape[0]
 
-        L = self.laplacian_matrix
-        S = sp.diags(np.ones(n)) - relaxation * L
+def iterative_matrix_laplacian_smoothing(self, relaxation: float = 0.1) -> pv.PolyData:
+    V = self.mesh.points.copy()
+    n = V.shape[0]
 
-        # Unconstrained smoothing (not recommended—mesh may collapse)
-        V_new = np.zeros_like(V)
-        for dim in range(3):
-            V_new[:, dim] = spla.spsolve(S, np.zeros(n))
+    L = self.laplacian_matrix
+    S = sp.diags(np.ones(n)) - relaxation * L
 
-        V_new = S @ V
-        smoothed_mesh = self.mesh.copy()
-        smoothed_mesh.points = V_new
-        return smoothed_mesh
+    # Unconstrained smoothing (not recommended—mesh may collapse)
+    V_new = np.zeros_like(V)
+    for dim in range(3):
+        V_new[:, dim] = spla.spsolve(S, np.zeros(n))
+
+    V_new = S @ V
+    smoothed_mesh = self.mesh.copy()
+    smoothed_mesh.points = V_new
+    return smoothed_mesh
 
 
 def fxn(x):
