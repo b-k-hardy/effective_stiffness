@@ -17,7 +17,19 @@ class DisplacementSmoother:
         n_neighbors: int = 1,
         weighting_method: Literal["uniform", "squared"] = "uniform",
     ) -> None:
-        self.mesh = mesh
+        """Initialize the displacement smoother.
+
+        This method initializes the smoother with a mesh and builds the combinatorial Laplacian matrix for the first pass.
+        # NOTE: consider removing matrix builder and turn into a more dynamic approach
+
+        Args:
+            mesh (pv.PolyData): The input mesh.
+            n_neighbors (int, optional): The number of neighbors to consider for smoothing. Defaults to 1.
+            weighting_method (Literal["uniform", "squared"], optional): The weighting method to use. Defaults to "uniform".
+
+        """
+        self.orig_mesh = mesh  # Store the original mesh for reference
+        self.mesh = mesh.copy()  # make a copy of the mesh to avoid modifying the original
         self.residuals = []
 
         # Initialize the laplacian matrix. Guess what: (FUCK) this thing needs to be updating
@@ -70,34 +82,30 @@ class DisplacementSmoother:
         self,
         max_iter: int = 100,
         weight: float = 1000.0,
+        atol: float = 1e-6,
     ) -> None:
         """Loop over the smoothing process."""
         # This method can be used to iterate over the smoothing process
         # and apply the smoothing to the mesh points.
         self.residuals.clear()  # clear residuals if you'd like to re-run with different weighting
 
-        if self.smoothing_method == "matrix_solve":
-            smoothed_mesh = self.matrix_laplacian_smoothing(
+        while len(self.residuals) < max_iter and self.residuals[-1] > atol:
+            smoothed_mesh = self.inner_laplacian_smoothing(
                 self.mesh,
                 weight=self.laplacian,
                 n_neighbors=1,
                 weighting_method="uniform",
             )
-        elif self.smoothing_method == "iterative":
-            # some extra work needs to be done here since I screwed up the laplacian builder
-
-            smoothed_mesh = self.iterative_matrix_laplacian_smoothing(relaxation=0.1)
 
     def smoother_analysis(self):
         """Perform analysis on the smoother."""
 
-    def matrix_laplacian_smoothing(self, weight: float = 1000.0) -> pv.PolyData:
-        """Perform Laplacian smoothing on a mesh using a matrix approach."""
+    def inner_laplacian_smoothing(self, weight: float = 1000.0) -> pv.PolyData:
+        """Perform Laplacian smoothing on a mesh using a matrix solve approach."""
         V = self.mesh.points.copy()
         n = V.shape[0]
         L = self.laplacian_matrix
 
-        # Solve LᵀL V = 0 using normal equations
         # A = L.T @ L + sp.diags([weight] * mesh.n_points) # NOTE: trying to remove the transpose
         A = L + sp.diags([weight] * self.mesh.n_points)
         b = weight * V
@@ -110,50 +118,3 @@ class DisplacementSmoother:
         smoothed_mesh = self.mesh.copy()
         smoothed_mesh.points = V_new
         return smoothed_mesh
-
-
-def iterative_matrix_laplacian_smoothing(self, relaxation: float = 0.1) -> pv.PolyData:
-    V = self.mesh.points.copy()
-    n = V.shape[0]
-
-    L = self.laplacian_matrix
-    S = sp.diags(np.ones(n)) - relaxation * L
-
-    # Unconstrained smoothing (not recommended—mesh may collapse)
-    V_new = np.zeros_like(V)
-    for dim in range(3):
-        V_new[:, dim] = spla.spsolve(S, np.zeros(n))
-
-    V_new = S @ V
-    smoothed_mesh = self.mesh.copy()
-    smoothed_mesh.points = V_new
-    return smoothed_mesh
-
-
-def fxn(x):
-    # distance function to use with map()... if that makes sense
-    return None
-
-
-def laplacian_smoothing_weighted(
-    mesh: pv.PolyData,
-    weight: float,
-    n_iter: int = 100,
-    n_neighbors: int = 1,
-) -> pv.PolyData:
-    # construct matrix for laplacian smoothing...
-    laplacian_matrix = np.zeros((mesh.n_points, mesh.n_points))
-    # loop over rows
-    for i in range(mesh.n_points):
-        # find the neighbors of the point depending on the n_neighbors parameter
-        neighbor_points_idx = mesh.point_neighbors_levels(i, n_neighbors)
-        neighbor_points_idx = list(itertools.chain.from_iterable(neighbor_points_idx))
-
-        # might be able to use map() or something efficient to also find the length from the original point to the neighbors
-        # and then use that to weight the laplacian matrix
-
-        # when done just put results in correct spot in row...
-
-    neighbor_points_idx = np.array(neighbor_points_idx)
-
-    return None
