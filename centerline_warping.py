@@ -385,8 +385,6 @@ def main():
             timestamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
             fig.savefig(f"{output_directory}/smoothing_tests/residuals_{timestamp}.png", dpi=300)
 
-        plt.show()
-
     if CIRCULARITY_ANALYSIS:
         with plt.style.context(["science", "notebook"]):
             fig, ax = plt.subplots(figsize=(8, 4), layout="constrained")
