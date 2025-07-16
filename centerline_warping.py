@@ -1,97 +1,27 @@
-import itertools
+import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
-import scienceplots
-import scipy.sparse as sp
-import scipy.sparse.linalg as spla
 from scipy.interpolate import make_splprep
 from scipy.spatial.transform import Rotation as R
 
-
-def build_combinatorial_laplacian(mesh: pv.PolyData):
-    n = len(mesh.points)
-    rows, cols = [], []
-
-    # Loop over all edges
-    for i in range(len(mesh.points)):
-        neighbors = mesh.point_neighbors(i)
-        for j in neighbors:
-            rows.append(i)
-            cols.append(j)
-
-    # Off-diagonal entries: -1 for each neighbor
-    data = -np.ones(len(rows))
-    L = sp.coo_matrix((data, (rows, cols)), shape=(n, n))
-
-    # Diagonal: degree of each vertex
-    degrees = np.array([len(mesh.point_neighbors(i)) for i in range(n)])
-    L += sp.diags(degrees)
-
-    return L.tocsr()
+from src import smoother
 
 
-def laplacian_smoothing(mesh: pv.PolyData, fixed_idx: np.ndarray = None) -> pv.PolyData:
-    V = mesh.points.copy()
-    n = V.shape[0]
+class EffectiveStiffnessAnalysis:
+    """Class to hold effective stiffness analysis data."""
 
-    L = build_combinatorial_laplacian(mesh)
+    def __init__(self, patient_ID: str, raw_centerline: pv.PolyData):
+        # NOTE: need to figure out how to enable all general set up for the class so another analysis can be run modularly
+        self.patient_ID = patient_ID
+        self.raw_centerline = raw_centerline
+        self.centerline_spline = None
+        self.full_surface = None
 
-    # Solve LᵀL V = 0 using normal equations
-    A = L.T @ L
-
-    # Handle constraints
-    if fixed_idx is not None and len(fixed_idx) > 0:
-        free_idx = np.setdiff1d(np.arange(n), fixed_idx)
-
-        A_ff = A[free_idx][:, free_idx]
-        A_fc = A[free_idx][:, fixed_idx]
-        V_fixed = V[fixed_idx]
-
-        # RHS is -A_fc @ V_fixed for each coordinate (x, y, z)
-        V_new = V.copy()
-        for dim in range(3):
-            rhs = -A_fc @ V_fixed[:, dim]
-            V_new[free_idx, dim] = spla.spsolve(A_ff, rhs)
-
-    # Unconstrained smoothing (not recommended—mesh may collapse)
-    else:
-        V_new = np.zeros_like(V)
-        for dim in range(3):
-            V_new[:, dim] = spla.spsolve(A, np.zeros(n))
-
-    mesh.points = V_new
-    return mesh
-
-
-def fxn(x):
-    # distance function to use with map()... if that makes sense
-    return None
-
-
-def laplacian_smoothing_weighted(
-    mesh: pv.PolyData,
-    weight: float,
-    n_iter: int = 100,
-    n_neighbors: int = 1,
-) -> pv.PolyData:
-    # construct matrix for laplacian smoothing...
-    laplacian_matrix = np.zeros((mesh.n_points, mesh.n_points))
-    # loop over rows
-    for i in range(mesh.n_points):
-        # find the neighbors of the point depending on the n_neighbors parameter
-        neighbor_points_idx = mesh.point_neighbors_levels(i, n_neighbors)
-        neighbor_points_idx = list(itertools.chain.from_iterable(neighbor_points_idx))
-
-        # might be able to use map() or something efficient to also find the length from the original point to the neighbors
-        # and then use that to weight the laplacian matrix
-
-        # when done just put results in correct spot in row...
-
-    neighbor_points_idx = np.array(neighbor_points_idx)
-
-    return None
+    def smooth_mesh(self, mesh: pv.PolyData, n_iter: int = 1000):
+        """Smooth the mesh using Taubin smoothing."""
+        return mesh.smooth_taubin(n_iter=n_iter)
 
 
 def surface_ray_tracing_displacement(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
@@ -128,6 +58,7 @@ def surface_ray_tracing_displacement(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -
 
 def nearest_surface_neighbor_mapping(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
     mesh_d = mesh_d.warp_by_vector("Centerline Displacement")
+    # NOTE: holy fuck this is not symmetric... might need to take another look?
     closest_cells, closest_points = mesh_s.find_closest_cell(mesh_d.points, return_closest_point=True)
     displacements = closest_points - mesh_d.points
     mesh_d.point_data.set_vectors(
@@ -294,7 +225,14 @@ def circularity_analysis():
 
 def main():
     # load the data
-    data_directory = "David"
+    vdm_id = "david_vdm"
+    data_directory = f"data/{vdm_id}"
+    output_directory = f"results/{vdm_id}"
+    smoother_weighting_method = "uniform"  # can be "uniform" or "squared"
+    update_weight = 10.0
+    max_iter = 100
+    n_neighbor = 3
+    atol = 0.5
 
     centerline_diastole = pv.read(f"{data_directory}/Centerline_model_David.vtp")
     centerline_systole = pv.read(f"{data_directory}/Centerline warped.vtp")
@@ -344,17 +282,17 @@ def main():
     full_surface_diastole.point_data.set_vectors(theta_grad, name="theta_gradient")
 
     # Save the results
-    centerline_diastole_spline.save(f"{data_directory}/David_spline_centerline_diastole.vtp")
-    centerline_systole_spline.save(f"{data_directory}/David_spline_centerline_systole.vtp")
+    centerline_diastole_spline.save(f"{output_directory}/david_spline_centerline_diastole.vtp")
+    centerline_systole_spline.save(f"{output_directory}/david_spline_centerline_systole.vtp")
 
-    all_extracted_diastole.save(f"{data_directory}/david_diastole_contours.vtp")
-    all_surfaces_diastole.save(f"{data_directory}/david_diastole_cross_sections.vtp")
+    all_extracted_diastole.save(f"{output_directory}/david_diastole_contours.vtp")
+    all_surfaces_diastole.save(f"{output_directory}/david_diastole_cross_sections.vtp")
 
-    all_extracted_systole.save(f"{data_directory}/david_systole_contours.vtp")
-    all_surfaces_systole.save(f"{data_directory}/david_systole_cross_sections.vtp")
+    all_extracted_systole.save(f"{output_directory}/david_systole_contours.vtp")
+    all_surfaces_systole.save(f"{output_directory}/david_systole_cross_sections.vtp")
 
-    full_surface_diastole.save(f"{data_directory}/david_diastole_surface.vtp")
-    full_surface_systole.save("David/david_systole_surface.vtp")
+    full_surface_diastole.save(f"{output_directory}/david_diastole_surface.vtp")
+    full_surface_systole.save(f"{output_directory}/david_systole_surface.vtp")
 
     # Smoothing and displacement analysis BELOW (for now -- putting it below initial saves)
     # Do full warping to the systolic state
@@ -362,16 +300,19 @@ def main():
     full_surface_diastole_warped = full_surface_diastole_warped.warp_by_vector("Nearest Surface Point Displacement")
 
     # NEW: try smoothing the displacement to see what happens. Compute derivative after smoothing SEPARATELY
-    full_surface_diastole_warped_smoothed = full_surface_diastole_warped.smooth(n_iter=1000)
-    full_surface_diastole_warped_smoothed_taubin = full_surface_diastole_warped.smooth_taubin(n_iter=100)
 
-    num_fixed = 1000
-    rng = np.random.default_rng()
-    fixed_idx = rng.choice(full_surface_diastole_warped.n_points, size=num_fixed, replace=False)
-    full_surface_diastole_warped_smoothed_test = laplacian_smoothing(
-        full_surface_diastole_warped,
-        fixed_idx=fixed_idx,
-    )  # picking random  points to fix and seeing what happens
+    # My custom smoother class!
+    custom_smoother = smoother.DisplacementSmoother(
+        diastolic_mesh=full_surface_diastole_warped,
+        systolic_mesh=full_surface_systole,
+        n_neighbors=n_neighbor,
+        weighting_method=smoother_weighting_method,
+    )
+    full_surface_diastole_warped_smoothed_test = custom_smoother.smoothing_loop(
+        max_iter=100,
+        weight=update_weight,
+        atol=atol,
+    )
 
     # compute the gradient of the surface coordinates after warping or warping+smoothing
     full_surface_diastole_warped = full_surface_diastole_warped.compute_derivative(scalars="surface_coordinates")
@@ -379,28 +320,6 @@ def main():
     theta_grad = full_surface_diastole_warped["gradient"][:, 3:]
     full_surface_diastole_warped.point_data.set_vectors(s_grad, name="s_gradient")
     full_surface_diastole_warped.point_data.set_vectors(theta_grad, name="theta_gradient")
-
-    full_surface_diastole_warped_smoothed = full_surface_diastole_warped_smoothed.compute_derivative(
-        scalars="surface_coordinates",
-    )
-    s_grad_smoothed = full_surface_diastole_warped_smoothed["gradient"][:, :3]
-    theta_grad_smoothed = full_surface_diastole_warped_smoothed["gradient"][:, 3:]
-    full_surface_diastole_warped_smoothed.point_data.set_vectors(s_grad_smoothed, name="s_gradient")
-    full_surface_diastole_warped_smoothed.point_data.set_vectors(theta_grad_smoothed, name="theta_gradient")
-
-    full_surface_diastole_warped_smoothed_taubin = full_surface_diastole_warped_smoothed_taubin.compute_derivative(
-        scalars="surface_coordinates",
-    )
-    s_grad_smoothed_taubin = full_surface_diastole_warped_smoothed_taubin["gradient"][:, :3]
-    theta_grad_smoothed_taubin = full_surface_diastole_warped_smoothed_taubin["gradient"][:, 3:]
-    full_surface_diastole_warped_smoothed_taubin.point_data.set_vectors(
-        s_grad_smoothed_taubin,
-        name="s_gradient",
-    )
-    full_surface_diastole_warped_smoothed_taubin.point_data.set_vectors(
-        theta_grad_smoothed_taubin,
-        name="theta_gradient",
-    )
 
     full_surface_diastole_warped_smoothed_test = full_surface_diastole_warped_smoothed_test.compute_derivative(
         scalars="surface_coordinates",
@@ -416,17 +335,57 @@ def main():
         name="theta_gradient",
     )
 
-    full_surface_diastole_warped.save(f"{data_directory}/david_diastole_surface_warped.vtp")
-    full_surface_diastole_warped_smoothed.save(f"{data_directory}/david_diastole_surface_warped_smoothed.vtp")
-    full_surface_diastole_warped_smoothed_taubin.save(
-        f"{data_directory}/david_diastole_surface_warped_smoothed_taubin.vtp",
-    )
+    full_surface_diastole_warped.save(f"{output_directory}/david_diastole_surface_warped.vtp")
     full_surface_diastole_warped_smoothed_test.save(
-        f"{data_directory}/david_diastole_surface_warped_smoothed_test.vtp",
+        f"{output_directory}/david_diastole_surface_warped_smoothed_test_{n_neighbor}.vtp",
     )
 
     # NEXT: need a way to associate the surface nodes with the centerline nodes... nearest neighbor for now? Then check in paraview
     # NOTE: I kind of do this already in a different script... just find that and copy?
+
+    if PLOT_RESIDUALS:
+        with plt.style.context(["science", "grid", "notebook"]):
+            fig, ax = plt.subplots(figsize=(6, 4), layout="constrained")
+            ax.set_title("Laplacian Smoothing Convergence")
+            ax.plot(
+                np.arange(len(custom_smoother.residuals)),
+                custom_smoother.residuals,
+                marker="o",
+                markersize=3,
+            )
+            ax.set_xlabel("Iteration")
+            ax.set_ylabel(r"$\left\Vert \mathbf{x}^{n-1} - \mathbf{x}^{n} \right\Vert_2$")
+            # Create a textbox with custom_smoother parameters
+            params_text = (
+                f"DisplacementSmoother parameters:\n"
+                f"n_neighbors: {n_neighbor}\n"
+                f"weighting_method: {smoother_weighting_method}\n"
+                f"weight: {update_weight}\n"
+                f"max_iter: {max_iter}\n"
+                f"atol: {atol}"
+            )
+            ax.text(
+                0.95,
+                0.95,
+                params_text,
+                transform=ax.transAxes,
+                fontsize=10,
+                verticalalignment="top",
+                horizontalalignment="right",
+                bbox={"boxstyle": "round,pad=0.5", "facecolor": "white", "alpha": 0.7},
+            )
+            ax.hlines(
+                y=atol,
+                xmin=0,
+                xmax=len(custom_smoother.residuals) - 1,
+                colors="r",
+                linestyles="dashed",
+            )
+            # Save figure with date and time in filename
+            timestamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
+            fig.savefig(f"{output_directory}/smoothing_tests/residuals_{timestamp}.png", dpi=300)
+
+        plt.show()
 
     if CIRCULARITY_ANALYSIS:
         with plt.style.context(["science", "notebook"]):
@@ -458,4 +417,6 @@ def main():
 
 if __name__ == "__main__":
     CIRCULARITY_ANALYSIS = False  # Set to True if you want to plot circularity shifting and the unwrapped surface
+    SAVE = False  # Set to True if you want to save the results. Good to disable during initial debugging to avoid overwriting files with junk.
+    PLOT_RESIDUALS = True  # Set to True if you want to plot the residuals during the smoothing process
     main()
