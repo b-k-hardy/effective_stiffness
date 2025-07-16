@@ -112,7 +112,9 @@ class DisplacementSmoother:
         L = self.laplacian_matrix
 
         # Solve the system
-        # A = L.T @ L + sp.diags([weight] * self.mesh.n_points)  # NOTE: trying to remove the transpose
+        # NOTE: it looks like the transpose is potentially for Biharmonic smoothing. Research further and maybe
+        # add this as an option.
+        # A = L.T @ L + sp.diags([weight] * self.mesh.n_points)
         A = L + sp.diags([weight] * self.mesh.n_points)
         b = weight * V
         V_new = np.zeros_like(self.mesh.points)
