@@ -92,10 +92,10 @@ def construct_systolic_vector(
 
 def main():
     # load in the data!
-    source_directory = "David"
-    smoothed_centerline = pv.read(f"{source_directory}/David_spline_centerline_systole.vtp")
+    source_directory = "pipe_bend_data/will_data/varying circumferential stiffness/brandon_stuff_bulge_refined"
+    smoothed_centerline = pv.read(f"{source_directory}/bulge_refined_spline_centerline_systole.vtp")
     # NOTE: need to be using the SYSTOLE centerline here since we warp to the systole centerline prior to strain calculation
-    vdm = pv.read(f"{source_directory}/david_diastole_surface.vtp")
+    vdm = pv.read(f"{source_directory}/bulge_refined_diastole_surface_nn.vtp")
 
     # data operations
     vdm = vdm.warp_by_vector("Centerline Displacement")
@@ -103,7 +103,7 @@ def main():
     diastole_normals = vdm.compute_normals()
     diastole_normals = diastole_normals.point_data["Normals"]
 
-    vdm_systole = vdm.warp_by_vector("Distance to Nearest Implicit Surface Point PYVISTA")
+    vdm_systole = vdm.warp_by_vector("Additional Displacement")
     systole_nodes = vdm_systole.points
 
     systole_normals = vdm_systole.compute_normals()
@@ -186,7 +186,9 @@ def main():
         vdm.point_data.set_vectors(systole_normals, "Systolic Radial Direction")
         vdm.point_data.set_vectors(diastole_normals, "Diastolic Radial Direction")
 
-        vdm.save(f"David_VDM_modified_{neighbor_extent}_centerline_adjustment_displacement_adjustment.vtp")
+        vdm.save(
+            f"{source_directory}/bulge_refined_{neighbor_extent}_centerline_adjustment_NO_displacement_adjustment.vtp",
+        )
 
 
 if __name__ == "__main__":
