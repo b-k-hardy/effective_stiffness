@@ -158,7 +158,9 @@ def main():
 
     # pro
     # SOMEHOW need to make this process recursive or something...
-    node_area_sys_connected = np.zeros(xyz.shape[0])
+    node_area_sys_connected = np.zeros(
+        xyz.shape[0]
+    )  # NOTE: how the fuck is this working if it's not being cleared before the inner loop... huh
     node_area_dia_connected = np.zeros(xyz.shape[0])
     node_element_count_connected = np.zeros(xyz.shape[0])
     cells = [("triangle", wall_bfile_elements)]
@@ -217,6 +219,30 @@ def main():
         ax3.set_ylabel("Estimated Stiffness (Pa)")
         fig3.tight_layout()
         fig3.savefig(f"visualizations/violin_plot_area_method_filtered_{neighbor_extent}.pdf")
+
+        fig4, ax4 = plt.subplots(figsize=(5, 5))
+        h, _, _, _ = ax4.hist2d(
+            stiffness_points,
+            node_stiffness_connected,
+            range=[[8e3, 3.2e4], [4e4, 1e6]],
+            bins=25,
+            vmax=200,
+        )
+        ax4.set_title(f"Stiffness vs Spring Constant on Outer Wall k={neighbor_extent}")
+        ax4.set_ylabel("Estimated Stiffness (Pa)")
+        ax4.set_xlabel("Estimated Spring Constant (Pa/mm)")
+        fig4.tight_layout()
+        fig4.savefig(f"visualizations/histogram_{neighbor_extent}.pdf")
+
+        fig5, ax5 = plt.subplots(figsize=(5, 5))
+        ax5.scatter(stiffness_points, node_stiffness_connected)
+        ax5.set_title(f"Stiffness vs Spring Constant on Outer Wall k={neighbor_extent}")
+        ax5.set_ylabel("Estimated Stiffness (Pa)")
+        ax5.set_xlabel("Estimated Spring Constant (Pa/mm)")
+        ax5.set_xbound(8e3, 3.2e4)
+        ax5.set_ybound(4e4, 1e6)
+        fig5.tight_layout()
+        fig5.savefig(f"visualizations/scatter_plot_{neighbor_extent}.pdf")
 
     ################ Write results to vtu files ################
     cells = [("triangle", wall_bfile_elements)]
