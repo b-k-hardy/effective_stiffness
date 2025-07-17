@@ -19,9 +19,16 @@ class EffectiveStiffnessAnalysis:
         self.centerline_spline = None
         self.full_surface = None
 
-    def smooth_mesh(self, mesh: pv.PolyData, n_iter: int = 1000):
-        """Smooth the mesh using Taubin smoothing."""
-        return mesh.smooth_taubin(n_iter=n_iter)
+    def fit_centerline_spline(self, n_spline_points: int = 500, smoothness: float = 10, reverse: bool = False):
+        # function to fit spline to dataset -- essentially for additional analysis
+        return -1
+
+    def circularity_analysis(self, clip_radius: float = 35.0):
+        # function to perform circularity analysis on the centerline and full surface
+        return -1
+
+    def warp_by_centerline(self):
+        return -1
 
 
 def surface_ray_tracing_displacement(mesh_d: pv.PolyData, mesh_s: pv.PolyData) -> pv.PolyData:
@@ -228,10 +235,10 @@ def main():
     vdm_id = "david_vdm"
     data_directory = f"data/{vdm_id}"
     output_directory = f"results/{vdm_id}"
-    smoother_weighting_method = "uniform"  # can be "uniform" or "squared"
-    update_weight = 10.0
+    smoother_weighting_method = "squared"  # can be "uniform" or "squared"
+    update_weight = 50.0
     max_iter = 100
-    n_neighbor = 3
+    n_neighbor = 2
     atol = 0.5
 
     centerline_diastole = pv.read(f"{data_directory}/Centerline_model_David.vtp")
@@ -300,6 +307,7 @@ def main():
     full_surface_diastole_warped = full_surface_diastole_warped.warp_by_vector("Nearest Surface Point Displacement")
 
     # NEW: try smoothing the displacement to see what happens. Compute derivative after smoothing SEPARATELY
+    # NOTE: NEED TO SEE HOW DISPLACEMENT IS SMOOTHED AS WELL -- THIS IS WHAT WE ARE TARGETING BUT IDK IF IT MAKES ANY SENSE
 
     # My custom smoother class!
     custom_smoother = smoother.DisplacementSmoother(
@@ -348,13 +356,21 @@ def main():
             fig, ax = plt.subplots(figsize=(6, 4), layout="constrained")
             ax.set_title("Laplacian Smoothing Convergence")
             ax.plot(
-                np.arange(len(custom_smoother.residuals)),
-                custom_smoother.residuals,
+                np.arange(len(custom_smoother.total_residuals)),
+                custom_smoother.total_residuals,
                 marker="o",
                 markersize=3,
+                label=r"Total: $\left\Vert \mathbf{x}^{n-1} - \mathbf{x}^{n} \right\Vert_2$",
+            )
+            ax.plot(
+                np.arange(len(custom_smoother.smoothing_residuals)),
+                custom_smoother.smoothing_residuals,
+                marker="x",
+                markersize=3,
+                label=r"Smoothing: $\left\Vert \mathbf{x}^{n-1} - \mathbf{x}^{*,n} \right\Vert_2$",
             )
             ax.set_xlabel("Iteration")
-            ax.set_ylabel(r"$\left\Vert \mathbf{x}^{n-1} - \mathbf{x}^{n} \right\Vert_2$")
+            ax.set_ylabel("Movement (mm)")
             # Create a textbox with custom_smoother parameters
             params_text = (
                 f"DisplacementSmoother parameters:\n"
@@ -377,9 +393,15 @@ def main():
             ax.hlines(
                 y=atol,
                 xmin=0,
-                xmax=len(custom_smoother.residuals) - 1,
+                xmax=len(custom_smoother.total_residuals) - 1,
                 colors="r",
                 linestyles="dashed",
+                label=f"Tolerance: {atol:.2f}",
+            )
+            ax.legend(
+                fontsize=10,
+                loc="center right",
+                framealpha=0.7,
             )
             # Save figure with date and time in filename
             timestamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
