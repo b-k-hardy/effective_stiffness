@@ -32,7 +32,8 @@ class DisplacementSmoother:
         """
         self.mesh = diastolic_mesh.copy()  # make a copy of the mesh to avoid modifying the original
         self.systolic_mesh = systolic_mesh
-        self.residuals = []
+        self.total_residuals = []
+        self.smoothing_residuals = []
         self.weighting_method = weighting_method
         self.n_neighbors = n_neighbors
 
@@ -82,12 +83,16 @@ class DisplacementSmoother:
         """Loop over the smoothing process."""
         # This method can be used to iterate over the smoothing process
         # and apply the smoothing to the mesh points.
-        self.residuals.clear()  # clear residuals if you'd like to re-run with different weighting
-        self.residuals.append(np.inf)  # initialize with a large value
+        self.total_residuals.clear()  # clear residuals if you'd like to re-run with different weighting
+        self.total_residuals.append(np.inf)  # initialize with a large value
+        self.smoothing_residuals.clear()  # clear smoothing residuals
 
-        while len(self.residuals) - 1 < max_iter + 1 and self.residuals[-1] > atol:
+        while len(self.total_residuals) - 1 < max_iter + 1 and self.total_residuals[-1] > atol:
             old_points = self.mesh.points.copy()
             intermediate_mesh = self.inner_laplacian_smoothing(weight=weight)
+            smoothing_distance = np.linalg.norm(old_points - intermediate_mesh.points, axis=1)
+            smoothing_residual = np.linalg.norm(smoothing_distance)
+            self.smoothing_residuals.append(smoothing_residual)
             _, closest_points = self.systolic_mesh.find_closest_cell(
                 intermediate_mesh.points,
                 return_closest_point=True,
@@ -96,13 +101,16 @@ class DisplacementSmoother:
             # Calculate the residuals
             distance = np.linalg.norm(old_points - self.mesh.points, axis=1)
             residual = np.linalg.norm(distance)
-            print(f"Iteration {len(self.residuals) - 1}: ||x^(n-1) - x^n|| = {residual:.6f}")
-            self.residuals.append(residual)
+            print(f"Iteration {len(self.total_residuals) - 1}: ||x^(n-1) - x^n|| = {residual:.6f}")
+            print(f"Iteration {len(self.total_residuals) - 1}: ||x^(n-1) - x^*,n|| = {smoothing_residual:.6f}\n")
+            self.total_residuals.append(residual)
+            # NOTE: add option to rebuild the laplacian matrix if needed
             # has to be rebuilt after each iteration if we do anything other than uniform weighting
-            if self.weighting_method != "uniform":
-                self.laplacian_matrix = self._build_combinatorial_laplacian()
+            # if self.weighting_method != "uniform":
+            #    self.laplacian_matrix = self._build_combinatorial_laplacian()
 
-        self.residuals = np.array(self.residuals[1:])  # remove the initial inf value
+        self.total_residuals = np.array(self.total_residuals[1:])  # remove the initial inf value
+        self.smoothing_residuals = np.array(self.smoothing_residuals)
         return self.mesh
 
     def inner_laplacian_smoothing(self, weight: float = 1000.0) -> pv.PolyData:
